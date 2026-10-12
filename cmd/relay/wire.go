@@ -12,15 +12,15 @@ import (
 	"github.com/NiekKeijzer/webhook-relay/forwarder"
 	"github.com/NiekKeijzer/webhook-relay/plugin"
 	"github.com/NiekKeijzer/webhook-relay/queue"
+	"github.com/NiekKeijzer/webhook-relay/queue/sqs"
 	"github.com/NiekKeijzer/webhook-relay/receiver"
 	"github.com/NiekKeijzer/webhook-relay/verify"
 	"github.com/NiekKeijzer/webhook-relay/verify/githubhmac"
 	"github.com/NiekKeijzer/webhook-relay/verify/none"
 )
 
-// queueTypes are the queue backends compiled into the binary. None exists
-// yet, so every configuration fails with an unknown queue type.
-var queueTypes []queue.Type
+// queueTypes are the queue backends compiled into the binary.
+var queueTypes = []queue.Type{sqs.Type}
 
 // registries holds the plugin and queue types compiled into the binary. It
 // implements config.Plugins and config.Queues.

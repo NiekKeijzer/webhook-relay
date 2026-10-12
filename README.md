@@ -5,9 +5,6 @@ exposing that network. A public **receiver** checks and queues each webhook; a
 **forwarder** inside the network pulls it from the queue and delivers it. See
 [docs/architecture-decisions.md](docs/architecture-decisions.md) for the design.
 
-> No queue backend exists yet, so both commands stop with
-> `unknown queue type` after validating the configuration.
-
 ## Build
 
 ```sh
@@ -47,10 +44,24 @@ Everything else comes from the environment:
 Any secret can come from a file instead: set `NAME_FILE` to the file's path
 rather than setting `NAME`. Trailing newlines in the file are ignored.
 
+The `sqs` queue type works with Amazon SQS, Scaleway Queues and ElasticMQ. The
+queue needs a dead-letter queue (redrive policy).
+
+| Variable | Meaning |
+|---|---|
+| `RELAY_QUEUE_URL` | the queue URL |
+| `RELAY_QUEUE_REGION` | the queue's region |
+| `RELAY_QUEUE_VISIBILITY_TIMEOUT_SECONDS` | must equal the queue's visibility timeout |
+| `RELAY_QUEUE_MAX_MESSAGE_SIZE` | optional: the queue's maximum message size in bytes, 262144 by default |
+| `RELAY_QUEUE_ACCESS_KEY_ID`, `RELAY_QUEUE_SECRET_ACCESS_KEY` | secrets, different for each component |
+
 ## Run
 
 ```sh
-export RELAY_QUEUE_TYPE=example-backend                # no backend exists yet
+export RELAY_QUEUE_TYPE=sqs
+export RELAY_QUEUE_URL="..." RELAY_QUEUE_REGION="..."
+export RELAY_QUEUE_VISIBILITY_TIMEOUT_SECONDS=30
+export RELAY_QUEUE_ACCESS_KEY_ID="..." RELAY_QUEUE_SECRET_ACCESS_KEY="..."
 export RELAY_ENVELOPE_KEY="$(openssl rand -base64 32)"
 export GITHUB_WEBHOOK_SECRET="..."                     # or GITHUB_WEBHOOK_SECRET_FILE
 export RELAY_FORWARDER_TIMEOUT_SECONDS=10
