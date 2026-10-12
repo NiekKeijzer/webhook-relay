@@ -5,6 +5,21 @@ exposing that network. A public **receiver** checks and queues each webhook; a
 **forwarder** inside the network pulls it from the queue and delivers it. See
 [docs/architecture-decisions.md](docs/architecture-decisions.md) for the design.
 
+## Run locally
+
+[compose.yaml](compose.yaml) runs ElasticMQ as the queue, the receiver, the
+forwarder and an echo target that logs every request it gets:
+
+```sh
+docker compose up --build
+curl -i -H 'Content-Type: application/json' -d '{"hello":"world"}' \
+  http://localhost:8080/bb10a60e-8f82-4321-b83e-565c0a6d88b4
+docker compose logs echo
+```
+
+The routes are in [local/relay.toml](local/relay.toml), the queues in
+[local/elasticmq.conf](local/elasticmq.conf).
+
 ## Build
 
 ```sh
@@ -78,4 +93,8 @@ RELAY_CONFIG="$(cat relay.toml)" ./relay forwarder
 
 ```sh
 go test -race ./...
+
+# Also test the SQS backend against the ElasticMQ of `docker compose up`:
+RELAY_TEST_SQS_QUEUE_URL=http://localhost:9324/000000000000/relay-test \
+  go test -race ./queue/sqs
 ```

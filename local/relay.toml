@@ -1,0 +1,8 @@
+# Routes of the local setup (compose.yaml).
+version = 1
+
+[[routes]]
+name = "local"
+ids = ["bb10a60e-8f82-4321-b83e-565c0a6d88b4"]
+verifier = { type = "none" }
+targets = [{ name = "echo", url = "http://echo:8080/hooks" }]

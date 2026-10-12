@@ -1,0 +1,52 @@
+# Local setup: ElasticMQ as the SQS queue, the receiver, the forwarder, and an
+# echo target that logs every request it gets.
+#
+#	docker compose up --build
+#	curl -i -H 'Content-Type: application/json' -d '{"hello":"world"}' \
+#	  http://localhost:8080/bb10a60e-8f82-4321-b83e-565c0a6d88b4
+#	docker compose logs echo
+#
+# The credentials and the envelope key below are for local use only.
+
+x-relay: &relay
+  build: .
+  volumes:
+    - ./local/relay.toml:/etc/relay/relay.toml:ro
+  environment:
+    RELAY_QUEUE_TYPE: sqs
+    RELAY_QUEUE_URL: http://elasticmq:9324/000000000000/relay
+    RELAY_QUEUE_REGION: elasticmq
+    RELAY_QUEUE_VISIBILITY_TIMEOUT_SECONDS: "30"
+    RELAY_QUEUE_ACCESS_KEY_ID: local
+    RELAY_QUEUE_SECRET_ACCESS_KEY: local
+    RELAY_ENVELOPE_KEY: local-envelope-key-for-development-only
+    RELAY_FORWARDER_TIMEOUT_SECONDS: "10"
+    RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS: "3600"
+  depends_on:
+    elasticmq:
+      condition: service_healthy
+
+services:
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1
+    volumes:
+      - ./local/elasticmq.conf:/opt/elasticmq.conf:ro
+    ports:
+      - "9324:9324"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9324/?Action=ListQueues"]
+      interval: 2s
+      retries: 15
+
+  receiver:
+    <<: *relay
+    command: ["receiver", "-config", "/etc/relay/relay.toml"]
+    ports:
+      - "8080:8080"
+
+  forwarder:
+    <<: *relay
+    command: ["forwarder", "-config", "/etc/relay/relay.toml"]
+
+  echo:
+    image: mendhak/http-https-echo:42
