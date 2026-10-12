@@ -37,7 +37,7 @@ Requirements:
 | Forwarder | A long-running process in the private network. It pulls messages from the queue and delivers them to targets. |
 | Route | One configured webhook endpoint: its URL IDs, verifier, acceptor and targets. |
 | Target | A named destination of a route: an HTTP URL inside the private network. |
-| Verifier | A plugin that checks a request is authentic, for example by a sender's signature. Optional per route. |
+| Verifier | A plugin that checks a request is authentic, for example by a sender's signature. Required per route; the verifier `none` states that a route has no authentication. |
 | Acceptor | A plugin that decides how the receiver answers the sender and whether the request is enqueued. |
 | Envelope | One queue message: a captured request, addressed to one target and signed by the receiver. |
 | Delivery ID | The identifier of one incoming request, taken from the sender when it provides one. |
@@ -66,7 +66,7 @@ These hold everywhere. A change that breaks one needs the maintainer's approval.
 3. **The queue is not trusted.** The forwarder delivers only envelopes with a valid receiver signature. Holding a queue send credential is not enough to reach a target.
 4. **The request reaches the target unchanged.** Method, query string and body bytes are identical to what the sender sent; kept headers keep all their values.
 5. **Configuration is static.** Each component loads its configuration once, at startup. No API, endpoint or UI changes configuration or queue contents.
-6. **Secrets live only in environment variables at runtime.** Configuration contains the *names* of environment variables, never secret values. Secrets never appear in logs, process arguments or error messages.
+6. **Secrets live only in the environment at runtime.** A secret is read from an environment variable, or from a file whose path is in the variable of the same name with `_FILE` appended (§10.3). The configuration file contains the *names* of environment variables, never secret values. Secrets never appear in logs, process arguments or error messages.
 7. **Logs and anything exposed carry no payload data.** Never log or expose bodies, query strings, header values, route IDs, secrets or target URLs. Use route name, target name, delivery ID, sizes, status codes, delivery counts and durations.
 8. **Least privilege.** The receiver can send to the queue but not receive from it. The forwarder can receive and acknowledge but not send, where the backend's permissions allow that split.
 9. **Error responses carry no detail.** Every error response to a sender has an empty body.
@@ -78,7 +78,7 @@ A route has:
 - a **name**: lowercase letters, digits and hyphens, unique. Used in logs, envelopes and the forwarder's configuration.
 - one or more **IDs**: random UUIDs (version 4). The webhook URL is `https://<receiver-host>/<id>`. A route has more than one ID only during an ID rotation.
 - the HTTP **methods** it accepts. Default: `POST`.
-- an optional **verifier** with its secrets (§6.3).
+- a **verifier** with its secrets (§6.3). A route without authentication uses the verifier `none`.
 - an optional **acceptor**. Default: the default acceptor (§6.4).
 - an optional **delivery ID header**: the request header that carries the sender's delivery ID.
 - **headers to keep**, in addition to the default set (§6.5).
@@ -86,7 +86,7 @@ A route has:
 
 ### Route IDs are semi-secret
 
-A route ID is an unguessable address, not authentication. For a route without a verifier, it is the only thing between strangers and the queue. Therefore:
+A route ID is an unguessable address, not authentication. For a route with the verifier `none`, it is the only thing between strangers and the queue. Therefore:
 
 - Generate IDs from a cryptographic random source. Never derive one from the route name.
 - An ID appears only in the sender's webhook settings and in the configuration. It is never logged, never used as a metric label, never written into an envelope and never sent to a target.
@@ -106,30 +106,33 @@ Each target of a route gets its own envelope, so each delivery succeeds, retries
 |---|---|
 | 1. Match the path to a route ID. The path must be exactly `/<id>`. | `404` |
 | 2. Check the method against the route's methods. | `405` |
-| 3. Read the raw body as bytes before anything parses it. | `413` if it exceeds the platform's request limit |
-| 4. Run the route's verifier, if it has one. | `401` |
-| 5. Run the acceptor. If it decides not to enqueue, send its reply and stop. | — |
+| 3. Read the raw body as bytes before anything parses it. | `413` if it exceeds the body limit; `400` if it cannot be read |
+| 4. Run the route's verifier. | `401` |
+| 5. Run the acceptor. If it decides not to enqueue, send its reply and stop. | `500` if its decision is invalid (§6.4) |
 | 6. Build one envelope per target. Check each against the queue's maximum message size before sending any. | `413`, nothing enqueued |
 | 7. Send all envelopes. | `503` |
 | 8. Send the acceptor's reply. | — |
 
+- The body limit is the platform's request limit, or the queue's maximum message size where there is no platform limit (`relay receiver`).
+- A `405` response carries an `Allow` header listing the route's methods.
 - The receiver bounds its queue calls so that it always answers within the sender's deadline (GitHub: 10 seconds).
 - If some envelopes of a fan-out were sent and others failed, the receiver answers `503`. If the sender retries with the same delivery ID, the forwarder's dedupe skips the targets that already received it.
 - The receiver keeps no state between requests, apart from reusable clients.
-- The receiver writes one log line per request: route name (or `unknown`), delivery ID, status, body size, number of envelopes and duration.
+- The receiver writes one log line per request: route name (or `unknown`), delivery ID, status, body size, number of envelopes and duration. The delivery ID is logged only once the request passed verification.
 
 ### 6.2 Delivery ID
 
-If the route has a delivery ID header and the request carries it, its value is the delivery ID. Otherwise the receiver generates a random one. The envelope records which of the two it is. All envelopes of one request share the same delivery ID.
+If the route has a delivery ID header and the request carries exactly one value for it that is non-empty, at most 256 bytes and printable ASCII, that value is the delivery ID. Otherwise the receiver generates a random one (a version 4 UUID). The envelope records which of the two it is. All envelopes of one request share the same delivery ID.
 
 ### 6.3 Verifiers *(contract)*
 
-A verifier decides whether a request is authentic. Verifiers are optional per route; a route without one accepts any request sent to its ID.
+A verifier decides whether a request is authentic. Every route has one. The verifier `none` accepts any request sent to the route's ID; a route uses it to state that it has no authentication.
 
 Illustrative Go. The shape is the contract; names may differ.
 
 ```go
-// Request is the incoming request as the receiver read it.
+// Request is the incoming request as the receiver read it. Request and
+// Params are shared by verifiers, acceptors and queue backends (§11).
 type Request struct {
 	Method string
 	Query  string      // raw query string, unchanged
@@ -154,6 +157,10 @@ type Params interface {
 // A verifier type is registered by name.
 type VerifierType struct {
 	Name string
+	// NeedsSecrets says whether a route using this type lists at least one
+	// secret (true) or none (false). Both components check secrets_env
+	// against it without resolving secrets.
+	NeedsSecrets bool
 	// Validate checks a route's params without secrets. Both components run it
 	// at startup, so they accept or reject the same configuration.
 	Validate func(params Params) error
@@ -171,7 +178,9 @@ Rules:
 - Verifiers never log. On failure the receiver logs only the route name and that verification failed.
 - Accepting several secrets is what makes rotation possible (§10.5).
 
-The initial verifier is `github-hmac-sha256`. It computes HMAC-SHA256 over the raw body with the route secret, hex-encodes it and compares it with the value of `X-Hub-Signature-256` after the `sha256=` prefix. A missing or malformed header fails verification. `Headers()` returns `X-Hub-Signature-256`.
+The verifier `none` takes no params and no secrets, and `Headers()` returns nothing.
+
+The first verifier for a sender is `github-hmac-sha256`. It computes HMAC-SHA256 over the raw body with the route secret, hex-encodes it and compares it with the value of `X-Hub-Signature-256` after the `sha256=` prefix. A missing or malformed header fails verification. `Headers()` returns `X-Hub-Signature-256`.
 
 ### 6.4 Acceptors *(contract)*
 
@@ -194,7 +203,9 @@ Rules:
 
 - Acceptor types are registered and validated at startup in the same way as verifier types (`Validate`, `New`), but without secrets.
 - When `Enqueue` is true, the reply goes out only after every envelope was sent successfully. A `2xx` to the sender therefore always means the request is durably queued.
-- Acceptors cannot override the receiver's failure responses (`401`, `404`, `405`, `413`, `503`).
+- Acceptors cannot override the receiver's failure responses (`400`, `401`, `404`, `405`, `413`, `500`, `503`).
+- A decision is invalid if its status is not a final status (200–599), or if `Enqueue` is true and the status is not 2xx. The receiver then answers `500` with an empty body and enqueues nothing.
+- A reply that is not 2xx is sent without its body (invariant 9).
 - Some senders send handshake requests that they don't sign. Supporting such a sender takes a verifier and an acceptor written for it: the verifier accepts the handshake by that sender's own rules, and the acceptor answers it.
 
 The default acceptor has type `default`. It enqueues the request and then replies with an empty body and the status in `params.status`. The status defaults to `202` and must be a 2xx.
@@ -223,8 +234,8 @@ An envelope never contains a route ID, a target URL or a secret.
 
 Rules:
 
-- The receiver signs every envelope with HMAC-SHA256 using the first envelope key. The signature covers every byte of the encoded envelope and travels inside the message body, not as queue metadata, so it works with any queue backend.
-- The forwarder accepts an envelope whose signature matches any of its configured envelope keys.
+- The receiver signs every envelope with HMAC-SHA256 using the current envelope key. The signature covers every byte of the encoded envelope and travels inside the message body, not as queue metadata, so it works with any queue backend.
+- The forwarder accepts an envelope whose signature matches the current envelope key or, during a rotation, the previous one (§10.5).
 - Body bytes survive encoding exactly. Compression is allowed.
 - The format is versioned. The forwarder rejects versions it does not know. When the format changes, deploy a forwarder that reads both versions before the receiver that writes the new one.
 - The exact byte layout is an implementation detail. It is defined in one shared package and covered by round-trip tests.
@@ -239,6 +250,7 @@ The receiver and the forwarder use the queue only through this contract. Any bac
 | Max message size | receiver | The largest message the backend accepts, in bytes. |
 | Receive | forwarder | Waits (long poll) until messages are available or a timeout passes. Each message comes with its body, delivery count, enqueue time and an ack handle. |
 | Ack(handle) | forwarder | Removes the message permanently. |
+| Ack deadline | forwarder | The time after which an unacknowledged message is redelivered. |
 
 Guarantees the relay relies on:
 
@@ -249,7 +261,7 @@ Guarantees the relay relies on:
 - **Bounded buffer.** How long and how much the relay can buffer is limited by the backend's retention period and storage. Fan-out multiplies storage per webhook by the number of targets.
 - **Separate credentials** for sending and for receiving and acknowledging, where the backend offers them.
 
-Each backend implements the contract in its own package and is selected by `queue.type` in the configuration. Backend implementations are outside this document.
+Each backend implements the contract in its own package and is selected by `RELAY_QUEUE_TYPE` (§10.3). A backend type declares the names of its params and credentials, and provides `Validate` (checks its params without credentials and returns the ack deadline, which the forwarder checks its forward timeout against), `NewSender` and `NewReceiver`. Backend implementations are outside this document.
 
 ## 9. Forwarder
 
@@ -285,20 +297,21 @@ Metrics, health checks and any other status the forwarder exposes are left to th
 
 ### 10.1 One file for both components
 
-A deployment has one configuration file, owned by the project that deploys the relay. That project may generate it, for example from a Terraform template. Both the receiver and the forwarder load the same file and use only the parts they need. The file is private (§5).
+A deployment has one configuration file, owned by the project that deploys the relay. That project may generate it, for example from a Terraform template. The file holds the routes and nothing else. Both the receiver and the forwarder load the same file and use only the parts they need. The file is private (§5).
 
-The file contains no secret values, only the names of the environment variables that hold them (§10.3). Each component is given only the variables it uses:
+The file contains no secret values. A route names the environment variables that hold its secrets; everything else a component needs comes from environment variables with fixed names (§10.3). Each component is given only the variables it uses:
 
-- **receiver**: the route secrets, the envelope keys and its queue send credentials;
-- **forwarder**: the envelope keys and its queue receive credentials.
+- **receiver**: the queue settings with its send credentials, the envelope key and the route secrets;
+- **forwarder**: the queue settings with its receive credentials, the envelope keys and the forwarder settings.
 
 At startup, each component:
 
 - parses the whole file strictly: unknown keys or missing required fields are errors;
 - validates the whole file, including the parts only the other component uses (§10.2), so both accept or reject the same file;
-- resolves the environment variables it uses, and exits with a clear error if one is missing or empty. Variables that only the other component uses are not resolved.
+- reads the environment variables it uses, and exits with a clear error if one is missing, empty or invalid. Both run the queue backend's `Validate`; the forwarder also checks its forward timeout against the queue's ack deadline. Variables that only the other component uses are not read.
+- never quotes values from the file or the environment in an error, such as route IDs, target URLs or secrets. A TOML syntax error is reported by line, column and last key only.
 
-A component reads its configuration from a file or from one environment variable holding the same content; the platform adapter uses whichever the platform supports.
+A component reads its configuration from a file or from one environment variable holding the same content; the platform adapter uses whichever the platform supports. The CLI takes `-config <path>`, or reads `RELAY_CONFIG` when `-config` is not given; setting both is an error.
 
 ### 10.2 Format
 
@@ -306,22 +319,6 @@ The configuration file is TOML, read with `github.com/BurntSushi/toml`. Example 
 
 ```toml
 version = 1
-
-[queue]
-type = "example-backend"
-params = {}
-
-[queue.credentials]
-receiver = {}
-forwarder = {}
-
-[envelope]
-# Names of environment variables, never the keys themselves.
-keys_env = ["RELAY_ENVELOPE_KEY_A"]
-
-[forwarder]
-timeout_seconds = 0
-dedupe_window_seconds = 0
 
 [[routes]]
 name = "github-infra"
@@ -335,38 +332,55 @@ targets = [
   { name = "deploy", url = "http://deploy.internal.example/hooks/github" },
   { name = "notify", url = "http://notify.internal.example/github" },
 ]
-```
 
-The forwarder settings are shown as `0` because their values are a deploy decision, not part of this design.
+[[routes]]
+name = "status-page"
+ids = ["0f8fad5b-d9cb-469f-a165-70867728950e"]
+verifier = { type = "none" }
+targets = [{ name = "dashboard", url = "http://dashboard.internal.example/hook" }]
+```
 
 | Field | Required | Meaning |
 |---|---|---|
 | `version` | yes | Configuration format version: `1`. |
-| `queue.type` | yes | Queue backend name. |
-| `queue.params` | per backend | Non-secret backend parameters, defined by the backend. |
-| `queue.credentials.receiver`, `.forwarder` | per backend | Names of the environment variables holding each component's credentials. The backend defines the keys. |
-| `envelope.keys_env` | yes | Names of the environment variables holding envelope keys. The first key signs; all keys are accepted. Each key is at least 32 bytes. |
-| `forwarder.timeout_seconds` | yes | Forward timeout. Must be shorter than the queue's ack deadline. |
-| `forwarder.dedupe_window_seconds` | yes | How long delivered dedupe keys are remembered. |
 | `routes[].name` | yes | `[a-z0-9-]+`, unique. |
-| `routes[].ids` | yes | One or more version 4 UUIDs, unique across all routes. |
-| `routes[].methods` | no | Default `["POST"]`. |
-| `routes[].verifier` | no | `type`, `params`, and `secrets_env`: names of the environment variables holding the route's active secrets. |
+| `routes[].ids` | yes | One or more version 4 UUIDs in lowercase canonical form, unique across all routes. The receiver matches the path exactly, so case matters. |
+| `routes[].methods` | no | Default `["POST"]`. If present, one or more of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, each once. |
+| `routes[].verifier` | yes | `type`, `params`, and `secrets_env`: names of the environment variables holding the route's active secrets (§10.3). `secrets_env` has at least one entry if the type needs secrets, and none otherwise. Each name is a valid environment variable name (`[A-Za-z_][A-Za-z0-9_]*`), listed once, and does not end in `_FILE`. Use `{ type = "none" }` for a route without authentication. |
 | `routes[].acceptor` | no | `type` and `params`. Default `{ type = "default" }`. |
-| `routes[].delivery_id_header` | no | Header carrying the sender's delivery ID. |
-| `routes[].headers` | no | Extra headers to keep. Names starting with `X-Relay-` are rejected. |
-| `routes[].targets` | yes, at least one | An inline array of tables, each with `name`, unique within the route, and `url`, an absolute `http` or `https` URL without a query string. |
+| `routes[].delivery_id_header` | no | Header carrying the sender's delivery ID. The same name rules as `headers` apply. |
+| `routes[].headers` | no | Extra headers to keep. Valid header names, matched regardless of case. Names starting with `X-Relay-` are rejected, and so are headers the forwarder cannot replay: `Connection`, `Content-Length`, `Host`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding` and `Upgrade`. |
+| `routes[].targets` | yes, at least one | An inline array of tables, each with `name` (`[a-z0-9-]+`, unique within the route) and `url`, an absolute `http` or `https` URL without user info, query string or fragment. |
 
-Validation at startup also verifies that every verifier, acceptor and queue type exists and accepts its params, and that names and IDs are unique.
+Validation at startup also verifies that every verifier and acceptor type exists and accepts its params, and that names and IDs are unique.
 
 Parsing rules:
 
-- **Unknown keys are errors**, in the configuration file and in plugin params. The library's `MetaData.Undecoded()` lists keys that were not decoded; for plugin params, check it after the plugin has decoded them.
-- **Each route's `verifier`, `acceptor` and `targets` are written inline**, inside the route. A `[[routes.targets]]` or `[routes.verifier]` block belongs to whichever `[[routes]]` comes before it, so a misplaced block silently moves it to another route. Components reject targets written as `[[routes.targets]]`: the library reports those as type `ArrayHash`, and an inline array as `Array`. The library reports an inline `verifier` or `acceptor` and a `[routes.verifier]` block as the same type, so for those two the rule is a convention the parser cannot enforce.
+- **Unknown keys are errors**, in the configuration file and in plugin params. Keys are lowercase and must match exactly; the library matches keys to struct fields regardless of case, so the parser also rejects keys that differ only in case.
+- **Plugin params are decoded per route.** The library's `MetaData` keys carry no array index, so `Undecoded()` and `Type()` report one result for a key path across all routes. If one route's plugin decodes `params.x`, another route's unknown `params.x` would no longer count as undecoded. Each route's params are therefore decoded on their own, and a plugin that does not decode non-empty params fails validation.
+- **Each route's `verifier`, `acceptor` and `targets` are written inline**, inside the route. A `[[routes.targets]]` or `[routes.verifier]` block belongs to whichever `[[routes]]` comes before it, so a misplaced block silently moves it to another route. Components reject targets written as `[[routes.targets]]`. Decoded into `map[string]any`, the library returns blocks as `[]map[string]any` and an inline array as `[]any`, which tells them apart per route. (`MetaData.Type` reports `ArrayHash` and `Array`, but only once per key path, so a later route with inline targets hides an earlier block.) The library reports an inline `verifier` or `acceptor` and a `[routes.verifier]` block as the same type, so for those two the rule is a convention the parser cannot enforce.
 
-### 10.3 Secrets
+### 10.3 Environment
 
-Route secrets, envelope keys and queue credentials reach the components as environment variables, set by the deploying project at deploy time. How that project stores and injects them is up to it; the relay only reads environment variables.
+Everything outside the routes reaches the components as environment variables, set by the deploying project at deploy time. How that project stores and injects them is up to it. An empty variable counts as unset.
+
+| Variable | Read by | Secret | Meaning |
+|---|---|---|---|
+| `RELAY_QUEUE_TYPE` | both | no | Queue backend name. |
+| `RELAY_QUEUE_<NAME>` | both | per backend | The backend's params (not secret) and credentials (secret), under names the backend declares: uppercase letters, digits and underscores, other than `TYPE` and not ending in `_FILE`. Unset params are left out; every credential is required. The receiver and the forwarder are each given their own credential values. |
+| `RELAY_ENVELOPE_KEY` | both | yes | The current envelope key, at least 32 bytes. The receiver signs with it. |
+| `RELAY_ENVELOPE_KEY_PREVIOUS` | forwarder | yes | Optional. The previous envelope key during a rotation (§10.5), at least 32 bytes. The forwarder accepts it as well. |
+| `RELAY_FORWARDER_TIMEOUT_SECONDS` | forwarder | no | Forward timeout in whole seconds, at least 1. Must be shorter than the queue's ack deadline. |
+| `RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS` | forwarder | no | How long delivered dedupe keys are remembered, in whole seconds, at least 1. |
+| the names in a route's `secrets_env` | receiver | yes | The route's active secrets. |
+
+The values of the forwarder settings are a deploy decision, not part of this design.
+
+Secrets:
+
+- A secret `NAME` is read from the variable `NAME`, or from the file whose path is in `NAME_FILE`. Setting both is an error.
+- A secret from a variable is the raw bytes of its value. A secret from a file is the file's content without trailing line feeds and carriage returns, so a file written with `echo` holds the intended value.
+- A missing or empty secret and a file that cannot be read are errors. Errors name the variables, never the value or the file's path, which may hold a misplaced secret.
 
 Route IDs and target URLs are not secrets, but they are private, so they live in the private configuration file.
 
@@ -383,14 +397,16 @@ The receiver and the forwarder are deployed separately. Both load the same file,
 
 ### 10.5 Rotation
 
-Each arrow is a deploy of the components named. A component that is not redeployed keeps its previous copy of the file; that is safe here, because it does not use the parts that change.
+Each arrow is a deploy of the components named. A component that is not redeployed keeps its previous file and environment; that is safe here, because it does not use the parts that change.
 
 - **Route secret:** add the new secret to `secrets_env` → receiver. Change the secret at the sender. Remove the old secret → receiver.
 - **Route ID:** add the new ID to `ids` → receiver. Change the URL at the sender. Remove the old ID → receiver.
 - **Envelope key:**
-  1. Add the new key at the end of `keys_env` → forwarder, then receiver.
-  2. Move it to the front → forwarder, then receiver. The receiver now signs with it.
-  3. Remove the old key → forwarder, then receiver. Do this only once no message signed with the old key can remain: after the queue's retention period, or once the queue and its dead-letter store are empty.
+  1. Set `RELAY_ENVELOPE_KEY` to the new key and `RELAY_ENVELOPE_KEY_PREVIOUS` to the old one → forwarder. It now accepts both.
+  2. Set `RELAY_ENVELOPE_KEY` to the new key → receiver. The receiver now signs with it.
+  3. Remove `RELAY_ENVELOPE_KEY_PREVIOUS` → forwarder. Do this only once no message signed with the old key can remain: after the queue's retention period, or once the queue and its dead-letter store are empty.
+
+  The forwarder accepts at most two keys, so a rotation finishes before the next one starts.
 
 ## 11. Code structure
 
@@ -410,12 +426,15 @@ verify, verify/<type>  Verifier contract, registry, implementations
 accept, accept/<type>  Acceptor contract, registry, implementations
 envelope               encode, decode, sign, check
 queue                  queue contract, interfaces only
-config                 schema, strict parsing, validation
+config                 file schema, strict parsing, validation, environment
+plugin                 Request and Params, shared by verifiers and acceptors
 ```
 
 Rules:
 
 - `receiver` and `forwarder` depend only on the `queue`, `verify` and `accept` contracts, never on a backend, a plugin implementation or a platform. Only `cmd/relay` and `platform/<name>` wire implementations in.
+- `config` cannot import the registries above it, so the caller passes plugin and queue checks in.
+- `internal/queuefake` is an in-memory queue for tests. Only `_test.go` files import it, and no queue type refers to it.
 - The receiver is a plain `http.Handler`. `relay receiver` serves it as an ordinary HTTP server, for local testing and container platforms. A platform adapter wraps the same handler for a serverless platform and follows that platform's packaging rules.
 - Only `queue/<backend>` and `platform/<name>` touch a cloud provider's API.
 
@@ -454,7 +473,7 @@ These facts were verified on 12 October 2026 and shape the contracts above. Re-c
 ## 13. Left to the implementation
 
 - The envelope's byte layout and compression.
-- Queue backend implementations, their parameters and their credential keys.
+- Queue backend implementations and the names of their params and credentials.
 - Metrics, health checks, canaries and any status endpoint, within invariants 5 and 7.
 - Batching of queue calls, and how the forwarder bounds messages in flight.
 - The dedupe data structure and its limits.
