@@ -1,9 +1,23 @@
 # webhook-relay
 
+[![CI](https://github.com/NiekKeijzer/webhook-relay/actions/workflows/build.yml/badge.svg)](https://github.com/NiekKeijzer/webhook-relay/actions)
+
 Delivers webhooks from the internet to services in a private network, without
 exposing that network. A public **receiver** checks and queues each webhook; a
 **forwarder** inside the network pulls it from the queue and delivers it. See
 [docs/architecture-decisions.md](docs/architecture-decisions.md) for the design.
+
+## Image
+
+```sh
+docker pull ghcr.io/niekkeijzer/webhook-relay:latest
+# or
+docker pull niekkeijzer/webhook-relay:latest
+```
+
+Published tags: `<major>` (from 1.0.0 on), `<major.minor>`,
+`<major.minor.patch>` and `latest` for releases (`v*` git tags); `main` and
+`sha-<short>` for the main branch.
 
 ## Run locally
 
@@ -100,3 +114,8 @@ go test -race ./...
 RELAY_TEST_SQS_QUEUE_URL=http://localhost:9324/000000000000/relay-test \
   go test -race ./queue/sqs
 ```
+
+## AI disclaimer
+
+The code, documentation and CI workflow were drafted with AI assistance
+(Claude) and reviewed before publishing.
