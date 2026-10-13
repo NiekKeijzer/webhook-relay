@@ -1,0 +1,50 @@
+# Example relay configuration, with invented target URLs. See §10 of
+# docs/architecture-decisions.md for every rule.
+#
+# The receiver and the forwarder load this same file. It holds only routes:
+# queue settings and secrets come from the environment. Write each route's
+# verifier, acceptor and targets inline, inside the route, as below.
+
+# Configuration format version.
+version = 1
+
+# A route is one webhook endpoint. The sender posts to
+# https://<receiver-host>/<id>.
+[[routes]]
+# [a-z0-9-]+, unique. Logs show the name, never the ID.
+name = "github-infra"
+# Lowercase version 4 UUIDs, unique across all routes. Keep them private:
+# anyone with an ID can post to the route. A second ID lets you move the
+# sender to a new URL without downtime.
+ids = [
+  "6f93e99f-13af-4faf-afc6-2bdbc5acfbd8",
+  "b5a897a6-8de1-49cb-9efb-0af7eca965f9",
+]
+# Optional, default ["POST"].
+methods = ["POST"]
+# Checks that a request is authentic. secrets_env names the environment
+# variables that hold the secret (set NAME or NAME_FILE), never the secret
+# itself. List two names while rotating the secret.
+verifier = { type = "github-hmac-sha256", secrets_env = ["GITHUB_INFRA_WEBHOOK_SECRET"] }
+# Optional. Decides the reply to the sender. "default" enqueues every request
+# and replies with params.status: a 2xx, 202 unless set.
+acceptor = { type = "default", params = { status = 202 } }
+# Optional. The header with the sender's delivery ID, which the forwarder
+# dedupes on. Without it, the receiver generates an ID per request.
+delivery_id_header = "X-GitHub-Delivery"
+# Optional. Headers to keep besides Content-Type, User-Agent and the
+# verifier's own headers, which are always kept.
+headers = ["X-GitHub-Event", "X-GitHub-Delivery", "X-GitHub-Hook-ID"]
+# Each target gets its own copy of the request. A URL has no query string;
+# the forwarder appends the one the sender used.
+targets = [
+  { name = "deploy", url = "http://deploy.internal.example/hooks/github" },
+  { name = "notify", url = "http://notify.internal.example/github" },
+]
+
+# A route without authentication: the defaults, and only the required fields.
+[[routes]]
+name = "status-page"
+ids = ["361ed097-6d29-43af-bbd0-5dd3509fb140"]
+verifier = { type = "none" }
+targets = [{ name = "dashboard", url = "http://dashboard.internal.example/hook" }]

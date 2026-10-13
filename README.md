@@ -45,6 +45,8 @@ targets = [{ name = "deploy", url = "http://deploy.internal.example/hooks/github
 
 The sender posts to `https://<receiver-host>/<route-id>`. A route without
 authentication uses `verifier = { type = "none" }`.
+[docs/relay.example.toml](docs/relay.example.toml) shows every field, with
+comments.
 
 Everything else comes from the environment:
 
