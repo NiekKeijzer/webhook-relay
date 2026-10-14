@@ -32,7 +32,7 @@ version = 1
 
 [[routes]]
 name = "github-infra"
-ids = ["%s"]
+ids_env = ["ROUTE_GITHUB_INFRA_ID"]
 verifier = { type = "github-hmac-sha256", secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"] }
 delivery_id_header = "X-GitHub-Delivery"
 headers = ["X-GitHub-Event", "X-GitHub-Delivery"]
@@ -85,12 +85,13 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := lookup(map[string]string{
-		configEnv:                               fmt.Sprintf(e2eConfig, e2eRouteID, deploy.URL, notify.URL),
+		configEnv:                               fmt.Sprintf(e2eConfig, deploy.URL, notify.URL),
 		"RELAY_QUEUE_TYPE":                      "e2e",
 		"RELAY_ENVELOPE_KEY":                    strings.Repeat("e", 32),
 		"RELAY_FORWARDER_TIMEOUT_SECONDS":       "5",
 		"RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS": "3600",
 		"ROUTE_GITHUB_INFRA_SECRET_FILE":        secretFile,
+		"ROUTE_GITHUB_INFRA_ID":                 e2eRouteID,
 	})
 
 	regs, err := newRegistries([]queue.Type{e2eQueueType})

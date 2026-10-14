@@ -26,6 +26,7 @@ type Config struct {
 type Route struct {
 	Name             string
 	IDs              []string
+	IDsEnv           []string // variables holding more IDs; only the receiver reads them
 	Methods          []string
 	Verifier         Verifier
 	Acceptor         Acceptor

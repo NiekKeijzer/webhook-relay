@@ -20,6 +20,7 @@ version = 1
 [[routes]]
 name = "github-infra"
 ids = ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+ids_env = ["ROUTE_GITHUB_INFRA_ID"]
 methods = ["POST"]
 verifier = { type = "hmac", params = {}, secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"] }
 acceptor = { type = "default", params = { status = 202 } }
@@ -76,7 +77,8 @@ func TestParseValid(t *testing.T) {
 	}
 
 	gh := cfg.Routes[0]
-	if gh.Name != "github-infra" || !slices.Equal(gh.IDs, []string{"7c9e6679-7425-40de-944b-e07fc1f90ae7"}) {
+	if gh.Name != "github-infra" || !slices.Equal(gh.IDs, []string{"7c9e6679-7425-40de-944b-e07fc1f90ae7"}) ||
+		!slices.Equal(gh.IDsEnv, []string{"ROUTE_GITHUB_INFRA_ID"}) {
 		t.Errorf("route = %+v", gh)
 	}
 	if gh.Verifier.Type != "hmac" || !slices.Equal(gh.Verifier.SecretsEnv, []string{"ROUTE_GITHUB_INFRA_SECRET"}) {
@@ -119,6 +121,7 @@ func TestParseErrors(t *testing.T) {
 	const ghVerifier = `verifier = { type = "hmac", params = {}, secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"] }`
 	const openTargets = `targets = [{ name = "sink", url = "http://sink.internal.example/" }]`
 	const ghID = `ids = ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]`
+	const ghIDsEnv = `ids_env = ["ROUTE_GITHUB_INFRA_ID"]`
 	tests := []struct {
 		name     string
 		old, new string // replaced in base; empty old prepends new
@@ -144,7 +147,7 @@ func TestParseErrors(t *testing.T) {
 		{"wrong version", "version = 1", "version = 2", "version must be 1"},
 		{"missing verifier", ghVerifier, "", `route "github-infra": verifier is required`},
 		{"missing verifier type", `verifier = { type = "none" }`, `verifier = { params = {} }`, `route "open": verifier.type is required`},
-		{"missing ids", ghID, "", `route "github-infra": ids needs at least one entry`},
+		{"missing ids", ghID + "\n" + ghIDsEnv, "", `route "github-infra": ids or ids_env needs at least one entry`},
 		{"missing targets", openTargets, "", `route "open": targets needs at least one entry`},
 
 		// Names.
@@ -195,9 +198,12 @@ func TestParseErrors(t *testing.T) {
 		{"bad secret env name", `secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"]`, `secrets_env = ["A-B"]`, "verifier.secrets_env[0]: not a valid environment variable name"},
 		{"duplicate secret env name", `secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"]`, `secrets_env = ["ROUTE_GITHUB_INFRA_SECRET", "ROUTE_GITHUB_INFRA_SECRET"]`, `verifier.secrets_env[1]: "ROUTE_GITHUB_INFRA_SECRET" is listed more than once`},
 		{"secret env name for a file", `secrets_env = ["ROUTE_GITHUB_INFRA_SECRET"]`, `secrets_env = ["ROUTE_GITHUB_INFRA_SECRET_FILE"]`, "verifier.secrets_env[0]: names ending in _FILE are reserved for secret files"},
+		{"bad id env name", ghIDsEnv, `ids_env = ["A-B"]`, `route "github-infra": ids_env[0]: not a valid environment variable name`},
+		{"duplicate id env name", ghIDsEnv, `ids_env = ["ROUTE_GITHUB_INFRA_ID", "ROUTE_GITHUB_INFRA_ID"]`, `ids_env[1]: "ROUTE_GITHUB_INFRA_ID" is listed more than once`},
+		{"id env name for a file", ghIDsEnv, `ids_env = ["ROUTE_GITHUB_INFRA_ID_FILE"]`, "ids_env[0]: names ending in _FILE are reserved for secret files"},
 
 		// Syntax and range errors do not quote the file.
-		{"syntax error", `name = "open"`, `name = "http://sensitive.example/" sensitive`, "line 18, column"},
+		{"syntax error", `name = "open"`, `name = "http://sensitive.example/" sensitive`, "line 19, column"},
 		{"out of range", "version = 1", "version = 99999999999999999999", "invalid TOML or value out of range"},
 	}
 	for _, tt := range tests {
@@ -269,6 +275,18 @@ func TestParseReportsAllErrors(t *testing.T) {
 	}
 }
 
+// A route can take all its IDs from the environment.
+func TestParseIDsEnvOnly(t *testing.T) {
+	data := strings.Replace(base, `ids = ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]`+"\n", "", 1)
+	cfg, err := Parse([]byte(data), fakePlugins{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gh := cfg.Routes[0]; gh.IDs != nil || !slices.Equal(gh.IDsEnv, []string{"ROUTE_GITHUB_INFRA_ID"}) {
+		t.Errorf("route = %+v", gh)
+	}
+}
+
 func TestParseRoutesInline(t *testing.T) {
 	data := `
 version = 1
@@ -332,6 +350,9 @@ var (
 	keyB = strings.Repeat("b", MinEnvelopeKeySize+8)
 )
 
+// envID is the route ID in ROUTE_GITHUB_INFRA_ID.
+const envID = "b5a897a6-8de1-49cb-9efb-0af7eca965f9"
+
 func fullEnv() *env {
 	return &env{values: map[string]string{
 		"RELAY_QUEUE_TYPE":                      "test",
@@ -342,6 +363,7 @@ func fullEnv() *env {
 		"RELAY_FORWARDER_TIMEOUT_SECONDS":       "10",
 		"RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS": "3600",
 		"ROUTE_GITHUB_INFRA_SECRET":             "route secret",
+		"ROUTE_GITHUB_INFRA_ID":                 envID,
 	}}
 }
 
@@ -379,6 +401,12 @@ func TestResolveReceiver(t *testing.T) {
 	if s := got.RouteSecrets["open"]; s != nil {
 		t.Errorf("route without secrets got %q", s)
 	}
+	if ids := got.RouteIDs["github-infra"]; !slices.Equal(ids, []string{envID}) {
+		t.Errorf("route IDs = %q", ids)
+	}
+	if ids := got.RouteIDs["open"]; ids != nil {
+		t.Errorf("route without ids_env got %q", ids)
+	}
 	for _, name := range []string{"RELAY_ENVELOPE_KEY_PREVIOUS", "RELAY_FORWARDER_TIMEOUT_SECONDS", "RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS"} {
 		if slices.Contains(e.looked, name) {
 			t.Errorf("receiver read %s", name)
@@ -399,7 +427,7 @@ func TestResolveForwarder(t *testing.T) {
 	if got.Timeout != 10*time.Second || got.DedupeWindow != time.Hour {
 		t.Errorf("timeout %s, dedupe window %s", got.Timeout, got.DedupeWindow)
 	}
-	for _, name := range []string{"ROUTE_GITHUB_INFRA_SECRET", "ROUTE_GITHUB_INFRA_SECRET_FILE"} {
+	for _, name := range []string{"ROUTE_GITHUB_INFRA_SECRET", "ROUTE_GITHUB_INFRA_SECRET_FILE", "ROUTE_GITHUB_INFRA_ID", "ROUTE_GITHUB_INFRA_ID_FILE"} {
 		if slices.Contains(e.looked, name) {
 			t.Errorf("forwarder read %s", name)
 		}
@@ -424,6 +452,7 @@ func TestResolveSecretFiles(t *testing.T) {
 		"RELAY_ENVELOPE_KEY":          keyA + "\r\n",
 		"RELAY_ENVELOPE_KEY_PREVIOUS": keyB,
 		"RELAY_QUEUE_KEY":             "line one\nline two\n\n",
+		"ROUTE_GITHUB_INFRA_ID":       envID + "\n",
 	} {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -445,6 +474,9 @@ func TestResolveSecretFiles(t *testing.T) {
 	}
 	if c := renv.Queue.Credentials["KEY"]; c != "line one\nline two" {
 		t.Errorf("queue credential = %q", c)
+	}
+	if ids := renv.RouteIDs["github-infra"]; !slices.Equal(ids, []string{envID}) {
+		t.Errorf("route IDs = %q", ids)
 	}
 
 	fenv, err := ResolveForwarder(e.lookup, queues)
@@ -486,6 +518,13 @@ func TestResolveErrors(t *testing.T) {
 		{"secret in place of the path", vars{"ROUTE_GITHUB_INFRA_SECRET": "", "ROUTE_GITHUB_INFRA_SECRET_FILE": "route secret"}, receiver, "cannot read the file named by ROUTE_GITHUB_INFRA_SECRET_FILE"},
 		{"empty file", vars{"RELAY_ENVELOPE_KEY": "", "RELAY_ENVELOPE_KEY_FILE": emptyFile}, receiver, "the file named by RELAY_ENVELOPE_KEY_FILE is empty"},
 
+		// Route IDs from ids_env. Errors never contain the ID.
+		{"missing route id", vars{"ROUTE_GITHUB_INFRA_ID": ""}, receiver, "environment variable ROUTE_GITHUB_INFRA_ID (or ROUTE_GITHUB_INFRA_ID_FILE) is missing or empty"},
+		{"route id not a uuid", vars{"ROUTE_GITHUB_INFRA_ID": "sensitive"}, receiver, `route "github-infra": the ID in ROUTE_GITHUB_INFRA_ID is not a lowercase version 4 UUID`},
+		{"route id in uppercase", vars{"ROUTE_GITHUB_INFRA_ID": strings.ToUpper(envID)}, receiver, "the ID in ROUTE_GITHUB_INFRA_ID is not a lowercase version 4 UUID"},
+		{"route id used by another route", vars{"ROUTE_GITHUB_INFRA_ID": "0f8fad5b-d9cb-469f-a165-70867728950e"}, receiver, `route "github-infra": the ID in ROUTE_GITHUB_INFRA_ID is also used by route "open"`},
+		{"route id also in ids", vars{"ROUTE_GITHUB_INFRA_ID": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, receiver, `route "github-infra": the ID in ROUTE_GITHUB_INFRA_ID is also used by route "github-infra"`},
+
 		// Queue.
 		{"missing queue type", vars{"RELAY_QUEUE_TYPE": ""}, forwarder, "environment variable RELAY_QUEUE_TYPE is missing or empty"},
 		{"unknown queue type", vars{"RELAY_QUEUE_TYPE": "example-backend"}, receiver, `queue: unknown queue type "example-backend"`},
@@ -501,8 +540,9 @@ func TestResolveErrors(t *testing.T) {
 		{"timeout out of range", vars{"RELAY_FORWARDER_TIMEOUT_SECONDS": "99999999999999999999"}, forwarder, "RELAY_FORWARDER_TIMEOUT_SECONDS is too large"},
 		{"timeout not below ack deadline", vars{"RELAY_FORWARDER_TIMEOUT_SECONDS": "60"}, forwarder, "RELAY_FORWARDER_TIMEOUT_SECONDS must be shorter than the queue's ack deadline (1m0s)"},
 	}
-	// Secret values and file paths, which may hold a misplaced secret.
-	secrets := []string{keyA, keyB, "route secret", "queue credential", shortKey, "sensitive"}
+	// Secret values, route IDs and file paths, which may hold a misplaced
+	// secret.
+	secrets := []string{keyA, keyB, "route secret", "queue credential", shortKey, "sensitive", envID, strings.ToUpper(envID), "0f8fad5b", "7c9e6679"}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := fullEnv()

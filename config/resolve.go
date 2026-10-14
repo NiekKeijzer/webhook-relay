@@ -60,6 +60,8 @@ type ReceiverEnv struct {
 	EnvelopeKey []byte
 	// RouteSecrets holds each route's active secrets, by route name.
 	RouteSecrets map[string][][]byte
+	// RouteIDs holds the IDs read from each route's ids_env, by route name.
+	RouteIDs map[string][]string
 }
 
 // ForwarderEnv holds what the forwarder reads from the environment.
@@ -73,8 +75,8 @@ type ForwarderEnv struct {
 }
 
 // ResolveReceiver reads the environment variables the receiver uses: the
-// queue settings with its credentials, the envelope key and the route
-// secrets.
+// queue settings with its credentials, the envelope key, the route secrets
+// and the route IDs from ids_env.
 func (c *Config) ResolveReceiver(lookup LookupFunc, queues Queues) (*ReceiverEnv, error) {
 	r := resolver{lookup: lookup}
 	q, _ := r.queue(queues)
@@ -82,6 +84,13 @@ func (c *Config) ResolveReceiver(lookup LookupFunc, queues Queues) (*ReceiverEnv
 		Queue:        q,
 		EnvelopeKey:  r.envelopeKey(envEnvelopeKey),
 		RouteSecrets: map[string][][]byte{},
+		RouteIDs:     map[string][]string{},
+	}
+	ids := map[string]string{} // ID to route; Parse checked the file's IDs
+	for _, route := range c.Routes {
+		for _, id := range route.IDs {
+			ids[id] = route.Name
+		}
 	}
 	for _, route := range c.Routes {
 		var secrets [][]byte
@@ -89,6 +98,22 @@ func (c *Config) ResolveReceiver(lookup LookupFunc, queues Queues) (*ReceiverEnv
 			secrets = append(secrets, r.secret(name))
 		}
 		env.RouteSecrets[route.Name] = secrets
+		for _, name := range route.IDsEnv {
+			// Read like a secret so NAME_FILE works and errors never quote it.
+			id := string(r.secret(name))
+			switch {
+			case id == "":
+				// r.secret reported it.
+			case !uuidV4Pattern.MatchString(id):
+				r.errs.add("route %q: the ID in %s is not a lowercase version 4 UUID", route.Name, name)
+			default:
+				if other, ok := ids[id]; ok {
+					r.errs.add("route %q: the ID in %s is also used by route %q", route.Name, name, other)
+				}
+				ids[id] = route.Name
+				env.RouteIDs[route.Name] = append(env.RouteIDs[route.Name], id)
+			}
+		}
 	}
 	if err := errors.Join(r.errs...); err != nil {
 		return nil, err

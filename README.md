@@ -71,6 +71,7 @@ Everything else comes from the environment:
 | `RELAY_ENVELOPE_KEY_PREVIOUS`: secret, only during a key rotation | forwarder |
 | `RELAY_FORWARDER_TIMEOUT_SECONDS`, `RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS` | forwarder |
 | the names in a route's `secrets_env` | receiver |
+| the names in a route's `ids_env`: optional, route IDs kept out of the file | receiver |
 
 Any secret can come from a file instead: set `NAME_FILE` to the file's path
 rather than setting `NAME`. Trailing newlines in the file are ignored.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/NiekKeijzer/webhook-relay/accept"
@@ -109,7 +110,7 @@ func newReceiver(cfg *config.Config, regs *registries, env *config.ReceiverEnv, 
 		}
 		routes = append(routes, receiver.Route{
 			Name:             r.Name,
-			IDs:              r.IDs,
+			IDs:              slices.Concat(r.IDs, env.RouteIDs[r.Name]),
 			Methods:          r.Methods,
 			Verifier:         v,
 			Acceptor:         a,

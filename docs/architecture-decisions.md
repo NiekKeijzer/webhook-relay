@@ -89,7 +89,7 @@ A route has:
 A route ID is an unguessable address, not authentication. For a route with the verifier `none`, it is the only thing between strangers and the queue. Therefore:
 
 - Generate IDs from a cryptographic random source. Never derive one from the route name.
-- An ID appears only in the sender's webhook settings and in the configuration. It is never logged, never used as a metric label, never written into an envelope and never sent to a target.
+- An ID appears only in the sender's webhook settings and in the configuration, or in a variable named by the route's `ids_env` (§10.3). It is never logged, never used as a metric label, never written into an envelope and never sent to a target.
 - The configuration file is private and must not be committed to a public repository. (It also holds target URLs.)
 - A route whose sender can sign requests must use a verifier.
 - If an ID leaks, rotate it (§10.5).
@@ -301,7 +301,7 @@ A deployment has one configuration file, owned by the project that deploys the r
 
 The file contains no secret values. A route names the environment variables that hold its secrets; everything else a component needs comes from environment variables with fixed names (§10.3). Each component is given only the variables it uses:
 
-- **receiver**: the queue settings with its send credentials, the envelope key and the route secrets;
+- **receiver**: the queue settings with its send credentials, the envelope key, the route secrets and the route IDs named in `ids_env`;
 - **forwarder**: the queue settings with its receive credentials, the envelope keys and the forwarder settings.
 
 At startup, each component:
@@ -344,7 +344,8 @@ targets = [{ name = "dashboard", url = "http://dashboard.internal.example/hook" 
 |---|---|---|
 | `version` | yes | Configuration format version: `1`. |
 | `routes[].name` | yes | `[a-z0-9-]+`, unique. |
-| `routes[].ids` | yes | One or more version 4 UUIDs in lowercase canonical form, unique across all routes. The receiver matches the path exactly, so case matters. |
+| `routes[].ids` | yes, unless `ids_env` has an entry | Version 4 UUIDs in lowercase canonical form, unique across all routes. The receiver matches the path exactly, so case matters. |
+| `routes[].ids_env` | no | Names of environment variables, each holding one more ID under the same rules as `ids` (§10.3). The same name rules as `secrets_env` apply. A route has at least one entry across `ids` and `ids_env`. |
 | `routes[].methods` | no | Default `["POST"]`. If present, one or more of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, each once. |
 | `routes[].verifier` | yes | `type`, `params`, and `secrets_env`: names of the environment variables holding the route's active secrets (§10.3). `secrets_env` has at least one entry if the type needs secrets, and none otherwise. Each name is a valid environment variable name (`[A-Za-z_][A-Za-z0-9_]*`), listed once, and does not end in `_FILE`. Use `{ type = "none" }` for a route without authentication. |
 | `routes[].acceptor` | no | `type` and `params`. Default `{ type = "default" }`. |
@@ -373,6 +374,7 @@ Everything outside the routes reaches the components as environment variables, s
 | `RELAY_FORWARDER_TIMEOUT_SECONDS` | forwarder | no | Forward timeout in whole seconds, at least 1. Must be shorter than the queue's ack deadline. |
 | `RELAY_FORWARDER_DEDUPE_WINDOW_SECONDS` | forwarder | no | How long delivered dedupe keys are remembered, in whole seconds, at least 1. |
 | the names in a route's `secrets_env` | receiver | yes | The route's active secrets. |
+| the names in a route's `ids_env` | receiver | no, but private | More route IDs. Read like secrets (`NAME` or `NAME_FILE`), and checked like `ids`, including uniqueness against every route's `ids`. |
 
 The values of the forwarder settings are a deploy decision, not part of this design.
 
@@ -382,7 +384,7 @@ Secrets:
 - A secret from a variable is the raw bytes of its value. A secret from a file is the file's content without trailing line feeds and carriage returns, so a file written with `echo` holds the intended value.
 - A missing or empty secret and a file that cannot be read are errors. Errors name the variables, never the value or the file's path, which may hold a misplaced secret.
 
-Route IDs and target URLs are not secrets, but they are private, so they live in the private configuration file.
+Route IDs and target URLs are not secrets, but they are private, so they live in the private configuration file. A deployment that keeps the file in version control can move IDs out of it with `ids_env`.
 
 ### 10.4 Change order
 
@@ -400,7 +402,7 @@ The receiver and the forwarder are deployed separately. Both load the same file,
 Each arrow is a deploy of the components named. A component that is not redeployed keeps its previous file and environment; that is safe here, because it does not use the parts that change.
 
 - **Route secret:** add the new secret to `secrets_env` → receiver. Change the secret at the sender. Remove the old secret → receiver.
-- **Route ID:** add the new ID to `ids` → receiver. Change the URL at the sender. Remove the old ID → receiver.
+- **Route ID:** add the new ID to `ids`, or to a variable named in `ids_env` → receiver. Change the URL at the sender. Remove the old ID → receiver.
 - **Envelope key:**
   1. Set `RELAY_ENVELOPE_KEY` to the new key and `RELAY_ENVELOPE_KEY_PREVIOUS` to the old one → forwarder. It now accepts both.
   2. Set `RELAY_ENVELOPE_KEY` to the new key → receiver. The receiver now signs with it.

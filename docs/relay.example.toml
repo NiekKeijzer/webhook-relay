@@ -20,6 +20,11 @@ ids = [
   "6f93e99f-13af-4faf-afc6-2bdbc5acfbd8",
   "b5a897a6-8de1-49cb-9efb-0af7eca965f9",
 ]
+# Optional. Names of environment variables that each hold one more ID, to
+# keep IDs out of this file. Only the receiver reads them, the same way it
+# reads secrets (NAME or NAME_FILE). A route needs at least one entry in ids
+# or ids_env.
+ids_env = ["GITHUB_INFRA_ROUTE_ID"]
 # Optional, default ["POST"].
 methods = ["POST"]
 # Checks that a request is authentic. secrets_env names the environment

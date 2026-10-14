@@ -20,6 +20,7 @@ type rawConfig struct {
 type rawRoute struct {
 	Name             string       `toml:"name"`
 	IDs              []string     `toml:"ids"`
+	IDsEnv           []string     `toml:"ids_env"`
 	Methods          *[]string    `toml:"methods"`
 	Verifier         *rawVerifier `toml:"verifier"`
 	Acceptor         *rawAcceptor `toml:"acceptor"`
@@ -104,19 +105,20 @@ func (r *rawConfig) validate() (*Config, error) {
 }
 
 func (rr *rawRoute) validate(errs *errorList, where string) Route {
-	route := Route{Name: rr.Name, IDs: rr.IDs}
+	route := Route{Name: rr.Name, IDs: rr.IDs, IDsEnv: rr.IDsEnv}
 	if !namePattern.MatchString(rr.Name) {
 		errs.add("%s: name must match [a-z0-9-]+", where)
 	}
 
-	if len(rr.IDs) == 0 {
-		errs.add("%s: ids needs at least one entry", where)
+	if len(rr.IDs) == 0 && len(rr.IDsEnv) == 0 {
+		errs.add("%s: ids or ids_env needs at least one entry", where)
 	}
 	for j, id := range rr.IDs {
 		if !uuidV4Pattern.MatchString(id) {
 			errs.add("%s: ids[%d] is not a lowercase version 4 UUID", where, j)
 		}
 	}
+	checkEnvNames(errs, where+": ids_env", rr.IDsEnv)
 
 	route.Methods = []string{http.MethodPost}
 	if rr.Methods != nil {
