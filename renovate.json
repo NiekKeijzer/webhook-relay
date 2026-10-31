@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    "schedule:weekly"
+  ],
+  "packageRules": [
+    {
+      "description": "Update the Go version in go.mod, the Dockerfile and mise.toml in one PR",
+      "matchDepNames": ["go", "golang"],
+      "groupName": "Go"
+    },
+    {
+      "description": "Renovate leaves the go directive in go.mod alone unless told to bump it",
+      "matchDepNames": ["go"],
+      "matchDepTypes": ["golang"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "A new Go release (1.26 to 1.27) counts as minor, but review it by hand",
+      "matchDepNames": ["go", "golang"],
+      "matchUpdateTypes": ["major", "minor"],
+      "automerge": false
+    }
+  ]
+}
