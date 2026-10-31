@@ -5,6 +5,7 @@
     ":semanticCommits",
     "schedule:weekly"
   ],
+  "reviewers": ["NiekKeijzer"],
   "packageRules": [
     {
       "description": "Update the Go version in go.mod, the Dockerfile and mise.toml in one PR",
