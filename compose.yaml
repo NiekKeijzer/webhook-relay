@@ -28,7 +28,7 @@ x-relay: &relay
 
 services:
   elasticmq:
-    image: softwaremill/elasticmq-native:1.7.1
+    image: softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c
     volumes:
       - ./local/elasticmq.conf:/opt/elasticmq.conf:ro
     ports:
@@ -49,4 +49,4 @@ services:
     command: ["forwarder", "-config", "/etc/relay/relay.toml"]
 
   echo:
-    image: mendhak/http-https-echo:42
+    image: mendhak/http-https-echo:42@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4
